@@ -1,3 +1,4 @@
+import os
 from collections import OrderedDict
 from functools import partial
 from typing import Any, List, Mapping, Optional
@@ -21,6 +22,8 @@ from torchvision.models.detection.retinanet import (
 from torchvision.models.detection.transform import GeneralizedRCNNTransform
 from torchvision.ops.feature_pyramid_network import LastLevelP6P7
 from torchvision.ops.misc import FrozenBatchNorm2d
+
+from load_data import VipsDataset
 
 
 def pad_tensor(tensor: Tensor, modulus: int,) -> Tensor:
@@ -108,7 +111,51 @@ class RetinanetModel(object):
         anchor_generator = AnchorGenerator(anchor_sizes, aspect_ratios)
         return anchor_generator
 
+def train_one_epoch(model, dataloader, device):
+    model.train(True)
+    for step, (images, targets) in enumerate(dataloader):
+        images = [image.to(device) for image in images]
+        targets = [dict([(k, v.to(device)) for k, v in target.items()]) for target in targets]
+
+        losses = model.forward(images, targets)
+        loss = losses['classification'] + losses['bbox_regression']
+        loss.backward()
+        optimizer.step()
+
+        print(f'Step: {step}')
+        for name, val in losses.items():
+            print(f'  {name}: {val.item()}')
+        print()
+
+def evaluate(model, image, device):
+    model.train(False)
+    image = torchvision.utils.draw_bounding_boxes((image * 255).to(torch.uint8), model.forward([image.to(device)])[0]['boxes'], colors='black')
+    if show:
+        torchvision.transforms.ToPILImage()(image).show()
+    return image
+
+def show(image, target):
+    torchvision.transforms.ToPILImage()(torchvision.utils.draw_bounding_boxes((image * 255).to(torch.uint8), target['boxes'], colors='black')).show()
 
 
 if __name__ == '__main__':
+    vips_img_dir = '/gladstone/finkbeiner/steve/work/data/npsad_data/vivek/amy-def-mfg'
+    vips_img_name = 'XE15-007_1_AmyB_1'
+    vips_img_fname = os.path.join(vips_img_dir, f'{vips_img_name}.mrxs')
+
+    json_dir = '/home/gryan/QuPath/v0.3/json'
+    json_fnames = [os.path.join(json_dir, subset, f'{vips_img_name}.json') for subset in 'train eval'.split()]
+
+    dataset = VipsDataset(vips_img_fname, json_fnames[0], stride=512, size=1024)
+    dataset_test = VipsDataset(vips_img_fname, json_fnames[1], stride=1024, size=1024)
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=4, shuffle=True, collate_fn=lambda _: tuple(zip(*_)))
+
+    device = torch.device('cuda', 0)
+    epochs = 3
+
     model = RetinanetModel.get_retinanet(4, v2=True, pretrained=True)
+    model.to(device)
+    optimizer = torch.optim.SGD(model.parameters(), **dict(lr=0.0001, momentum=0.09, weight_decay=0.00001))
+
+    for epoch in range(epochs):
+        train_one_epoch(model, dataloader, device)
