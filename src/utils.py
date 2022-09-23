@@ -25,3 +25,8 @@ def bboxes_to_tiles_map(bboxes, stride, size):
         for tile in bbox_to_tiles(*bbox, stride, size):
             tiles_map.setdefault(tile, list()).append(idx)
     return tiles_map
+
+
+def default_fill(defaults, d):
+    for item in defaults.items():
+        d.setdefault(*item)

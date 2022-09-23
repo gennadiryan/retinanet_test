@@ -24,6 +24,8 @@ from torchvision.ops.feature_pyramid_network import LastLevelP6P7
 from torchvision.ops.misc import FrozenBatchNorm2d
 
 from load_data import VipsDataset
+from utils import default_fill
+from viz import evaluate_grid, reference_grid
 
 
 def pad_tensor(tensor: Tensor, modulus: int,) -> Tensor:
@@ -49,6 +51,14 @@ class RetinanetModel(object):
         backbone=ResNet50_Weights.IMAGENET1K_V1,
     )
     num_classes = 91
+    defaults = dict(
+        fg_iou_thresh=0.5,
+        bg_iou_thresh=0.4,
+        score_thresh=0.05,
+        nms_thresh=0.5,
+        detections_per_img=300,
+        topk_candidates=1000,
+    )
 
     @classmethod
     def get_retinanet(
@@ -60,6 +70,8 @@ class RetinanetModel(object):
         trainable_layers: int = 3,
         **kwargs,
     ) -> nn.Module:
+        default_fill(RetinanetModel.defaults, kwargs)
+
         backbone = cls.get_fpn(pretrained_backbone, trainable_layers)
         anchor_generator = cls.get_anchor_generator()
         head = RetinaNetHead(
@@ -75,6 +87,7 @@ class RetinanetModel(object):
             num_classes,
             anchor_generator=anchor_generator,
             head=head,
+            **kwargs,
         )
 
         if pretrained:
@@ -111,6 +124,7 @@ class RetinanetModel(object):
         anchor_generator = AnchorGenerator(anchor_sizes, aspect_ratios)
         return anchor_generator
 
+
 def train_one_epoch(model, dataloader, device):
     model.train(True)
     for step, (images, targets) in enumerate(dataloader):
@@ -127,15 +141,6 @@ def train_one_epoch(model, dataloader, device):
             print(f'  {name}: {val.item()}')
         print()
 
-def evaluate(model, image, device):
-    model.train(False)
-    image = torchvision.utils.draw_bounding_boxes((image * 255).to(torch.uint8), model.forward([image.to(device)])[0]['boxes'], colors='black')
-    if show:
-        torchvision.transforms.ToPILImage()(image).show()
-    return image
-
-def show(image, target):
-    torchvision.transforms.ToPILImage()(torchvision.utils.draw_bounding_boxes((image * 255).to(torch.uint8), target['boxes'], colors='black')).show()
 
 
 if __name__ == '__main__':
@@ -151,11 +156,24 @@ if __name__ == '__main__':
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=4, shuffle=True, collate_fn=lambda _: tuple(zip(*_)))
 
     device = torch.device('cuda', 0)
-    epochs = 3
+    epochs = 10
+    train_params = dict(
+        lr=0.0001,
+        momentum=0.09,
+        weight_decay=0.00001
+    )
+    model_params = dict(
+        fg_iou_thresh=0.7,
+        nms_thresh=0.7,
+    )
+    class_params = dict(
+        class_names='Core Diffuse Neuritic CAA'.split(),
+        class_colors='red green blue yellow'.split(),
+    )
 
-    model = RetinanetModel.get_retinanet(4, v2=True, pretrained=True)
+    model = RetinanetModel.get_retinanet(4, v2=True, pretrained=True, **model_params)
     model.to(device)
-    optimizer = torch.optim.SGD(model.parameters(), **dict(lr=0.0001, momentum=0.09, weight_decay=0.00001))
+    optimizer = torch.optim.SGD(model.parameters(), **train_params)
 
-    for epoch in range(epochs):
-        train_one_epoch(model, dataloader, device)
+    # for epoch in range(epochs):
+    #     train_one_epoch(model, dataloader, device)
