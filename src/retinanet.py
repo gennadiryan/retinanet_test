@@ -25,7 +25,7 @@ from torchvision.ops.misc import FrozenBatchNorm2d
 
 from load_data import VipsDataset
 from utils import default_fill
-from viz import evaluate_grid, reference_grid
+from viz import evaluate_checkpoint
 
 
 def pad_tensor(tensor: Tensor, modulus: int,) -> Tensor:
@@ -126,6 +126,7 @@ class RetinanetModel(object):
 
 
 def train_one_epoch(model, dataloader, device):
+    model.to(device)
     model.train(True)
     for step, (images, targets) in enumerate(dataloader):
         images = [image.to(device) for image in images]
@@ -152,7 +153,7 @@ if __name__ == '__main__':
     json_fnames = [os.path.join(json_dir, subset, f'{vips_img_name}.json') for subset in 'train eval'.split()]
 
     dataset = VipsDataset(vips_img_fname, json_fnames[0], stride=512, size=1024)
-    dataset_test = VipsDataset(vips_img_fname, json_fnames[1], stride=1024, size=1024)
+    dataset_test = list(VipsDataset(vips_img_fname, json_fnames[1], stride=1024, size=1024))[:9]
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=4, shuffle=True, collate_fn=lambda _: tuple(zip(*_)))
 
     device = torch.device('cuda', 0)
@@ -160,20 +161,35 @@ if __name__ == '__main__':
     train_params = dict(
         lr=0.0001,
         momentum=0.09,
-        weight_decay=0.00001
+        weight_decay=0.00001,
     )
     model_params = dict(
         fg_iou_thresh=0.7,
         nms_thresh=0.7,
+    )
+    run_params = dict(
+        ckpt_dir='/home/gryan/projects/rn/artifacts/ckpts',
+        ckpt_freq=3,
+        run_id='alpha'
     )
     class_params = dict(
         class_names='Core Diffuse Neuritic CAA'.split(),
         class_colors='red green blue yellow'.split(),
     )
 
+    ckpt_dir = os.path.join(run_params.get('ckpt_dir'), run_params.get('run_id'))
+    if not os.path.isdir(ckpt_dir):
+        os.makedirs(ckpt_dir)
+
     model = RetinanetModel.get_retinanet(4, v2=True, pretrained=True, **model_params)
     model.to(device)
     optimizer = torch.optim.SGD(model.parameters(), **train_params)
 
-    # for epoch in range(epochs):
-    #     train_one_epoch(model, dataloader, device)
+    for epoch in range(1, epochs + 1):
+        print(f'Epoch: {epoch}')
+        print()
+        train_one_epoch(model, dataloader, device)
+        if epoch == epochs or epoch % run_params.get('ckpt_freq') == 0:
+            print(f'Writing checkpoint to {ckpt_dir}')
+            print()
+            evaluate_checkpoint(model, dataset_test, epoch, ckpt_dir)
