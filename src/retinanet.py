@@ -157,7 +157,6 @@ if __name__ == '__main__':
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=4, shuffle=True, collate_fn=lambda _: tuple(zip(*_)))
 
     device = torch.device('cuda', 0)
-    epochs = 10
     train_params = dict(
         lr=0.0001,
         momentum=0.09,
@@ -170,7 +169,8 @@ if __name__ == '__main__':
     run_params = dict(
         ckpt_dir='/home/gryan/projects/rn/artifacts/ckpts',
         ckpt_freq=3,
-        run_id='alpha'
+        run_id='alpha',
+        epochs=30,
     )
     class_params = dict(
         class_names='Core Diffuse Neuritic CAA'.split(),
@@ -185,11 +185,11 @@ if __name__ == '__main__':
     model.to(device)
     optimizer = torch.optim.SGD(model.parameters(), **train_params)
 
-    for epoch in range(1, epochs + 1):
+    for epoch in range(1, run_params.get('epochs') + 1):
         print(f'Epoch: {epoch}')
         print()
         train_one_epoch(model, dataloader, device)
-        if epoch == epochs or epoch % run_params.get('ckpt_freq') == 0:
+        if epoch == run_params.get('epochs') or epoch % run_params.get('ckpt_freq') == 0:
             print(f'Writing checkpoint to {ckpt_dir}')
             print()
             evaluate_checkpoint(model, dataset_test, epoch, ckpt_dir)
