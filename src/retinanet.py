@@ -10,7 +10,8 @@ import torchvision
 from torchvision.models.resnet import resnet50, ResNet50_Weights
 from torchvision.models.detection.anchor_utils import AnchorGenerator
 from torchvision.models.detection.backbone_utils import _resnet_fpn_extractor
-from torchvision.models.detection.retinanet import (
+# from torchvision.models.detection.retinanet import (
+from torchvision_retinanet import (
     RetinaNet,
     RetinaNetHead,
     RetinaNetClassificationHead,
@@ -25,7 +26,7 @@ from torchvision.ops.misc import FrozenBatchNorm2d
 
 from load_data import VipsDataset
 from utils import default_fill
-from viz import evaluate_checkpoint
+from viz import compute_map, compute_grid
 
 
 def pad_tensor(tensor: Tensor, modulus: int,) -> Tensor:
@@ -143,6 +144,34 @@ def train_one_epoch(model, dataloader, device):
         print()
 
 
+def evaluate(model, dataset, epoch, save_path, metrics_params=None, viz_params=None,):
+    model.to(torch.device('cpu'))
+    model.train(False)
+    model_path = os.path.join(save_path, f'model_{epoch}.pt')
+
+    if metrics_params is None:
+        metrics_params = dict()
+    metrics_path = os.path.join(save_path, f'metrics_{epoch}.pt')
+
+    if viz_params is None:
+        viz_params = dict()
+    viz_path = os.path.join(save_path, f'viz_{epoch}.png')
+
+    images, targets = tuple(zip(*dataset))
+    out_targets = [model.forward([image])[0] for image in images]
+
+    metrics = compute_map(targets, out_targets, **metrics_params,)
+    grid = compute_grid(images, out_targets, **viz_params,)
+
+    torch.save(model.state_dict(), model_path)
+    torch.save(metrics, metrics_path)
+    torch.save(grid, viz_path)
+
+    return metrics
+
+
+
+
 
 if __name__ == '__main__':
     vips_img_dir = '/gladstone/finkbeiner/steve/work/data/npsad_data/vivek/amy-def-mfg'
@@ -153,43 +182,54 @@ if __name__ == '__main__':
     json_fnames = [os.path.join(json_dir, subset, f'{vips_img_name}.json') for subset in 'train eval'.split()]
 
     dataset = VipsDataset(vips_img_fname, json_fnames[0], stride=512, size=1024)
-    dataset_test = list(VipsDataset(vips_img_fname, json_fnames[1], stride=1024, size=1024))[:9]
+    dataset_test = list(VipsDataset(vips_img_fname, json_fnames[1], stride=1024, size=1024))
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=4, shuffle=True, collate_fn=lambda _: tuple(zip(*_)))
 
     device = torch.device('cuda', 0)
     train_params = dict(
-        lr=0.0001,
-        momentum=0.09,
-        weight_decay=0.00001,
+        optim_params=dict(
+            lr=0.0001,
+            momentum=0.09,
+            weight_decay=0.00001,
+        ),
     )
     model_params = dict(
-        fg_iou_thresh=0.7,
-        nms_thresh=0.7,
+        #Training
+        generalized_box_iou=True,
+
+        # Evaluation
+        score_thresh=0.25, # this is a good in-between value; 0.05 counts too many spurious detections
+        detections_per_img=100, # cap the detections we work with at 100 as there are 8-10 at MOST in this dataset
+        batched_nms=False, # helps eliminate multiple predictions per anchor
     )
     run_params = dict(
         ckpt_dir='/home/gryan/projects/rn/artifacts/ckpts',
         ckpt_freq=3,
-        run_id='alpha',
+        run_id='beta',
         epochs=30,
     )
-    class_params = dict(
+    metrics_params = dict(
+        class_metrics=True,
+    )
+    viz_params = dict(
         class_names='Core Diffuse Neuritic CAA'.split(),
         class_colors='red green blue yellow'.split(),
     )
 
-    ckpt_dir = os.path.join(run_params.get('ckpt_dir'), run_params.get('run_id'))
-    if not os.path.isdir(ckpt_dir):
-        os.makedirs(ckpt_dir)
-
     model = RetinanetModel.get_retinanet(4, v2=True, pretrained=True, **model_params)
     model.to(device)
-    optimizer = torch.optim.SGD(model.parameters(), **train_params)
+    optimizer = torch.optim.SGD(model.parameters(), **train_params.get('optim_params'))
 
-    for epoch in range(1, run_params.get('epochs') + 1):
-        print(f'Epoch: {epoch}')
-        print()
-        train_one_epoch(model, dataloader, device)
-        if epoch == run_params.get('epochs') or epoch % run_params.get('ckpt_freq') == 0:
-            print(f'Writing checkpoint to {ckpt_dir}')
+    ckpt_dir = os.path.join(run_params.get('ckpt_dir'), run_params.get('run_id'))
+
+    if (len(input('Begin training: ')) > 0):
+        if not os.path.isdir(ckpt_dir):
+            os.makedirs(ckpt_dir)
+        for epoch in range(1, run_params.get('epochs') + 1):
+            print(f'Epoch: {epoch}')
             print()
-            evaluate_checkpoint(model, dataset_test, epoch, ckpt_dir)
+            train_one_epoch(model, dataloader, device)
+            if epoch == run_params.get('epochs') or epoch % run_params.get('ckpt_freq') == 0:
+                print(f'Writing checkpoint to {ckpt_dir}')
+                print()
+                evaluate_checkpoint(model, dataset_test, epoch, ckpt_dir, **class_params)
