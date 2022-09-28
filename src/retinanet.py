@@ -28,7 +28,7 @@ from torchvision.ops.misc import FrozenBatchNorm2d
 
 from load_data import VipsDataset
 from utils import default_fill
-from viz import compute_map, compute_grid
+from viz import compute_map, compute_grid, draw
 
 
 def pad_tensor(tensor: Tensor, modulus: int,) -> Tensor:
@@ -129,7 +129,6 @@ class RetinanetModel(object):
 
 
 def train_one_epoch(model, dataloader, device, epoch, progress_bar=False):
-    model.to(device)
     model.train(True)
 
     losses = list()
@@ -172,8 +171,7 @@ def train_one_epoch(model, dataloader, device, epoch, progress_bar=False):
         print()
 
 
-def evaluate(model, dataset, epoch, save_path, metrics_params=None, viz_params=None,):
-    model.to(torch.device('cpu'))
+def evaluate(model, dataset, device, epoch, save_path, metrics_params=None, viz_params=None,):
     model.train(False)
     model_path = os.path.join(save_path, f'model_{epoch}.pt')
 
@@ -186,7 +184,8 @@ def evaluate(model, dataset, epoch, save_path, metrics_params=None, viz_params=N
     viz_path = os.path.join(save_path, f'viz_{epoch}.png')
 
     images, targets = tuple(zip(*dataset))
-    out_targets = [model.forward([image])[0] for image in images]
+    with torch.no_grad():
+        out_targets = [OrderedDict([(k, v.to(torch.device('cpu'))) for k, v in model.forward([image.to(device)])[0].items()]) for image in images]
 
     metrics = compute_map(targets, out_targets, **metrics_params,)
     grid = compute_grid(images, out_targets, **viz_params,)
@@ -234,7 +233,7 @@ if __name__ == '__main__':
         ckpt_dir='/home/gryan/projects/rn/artifacts/ckpts',
         ckpt_freq=5,
         run_id='gamma',
-        epochs=70,
+        epochs=75,
     )
     metrics_params = dict(
         class_metrics=True,
@@ -259,5 +258,5 @@ if __name__ == '__main__':
             train_one_epoch(model, dataloader, device, epoch, progress_bar=True)
             if epoch == run_params.get('epochs') or epoch % run_params.get('ckpt_freq') == 0:
                 print(f'Writing checkpoint to {ckpt_dir}')
-                print(evaluate(model, dataset_test, epoch, ckpt_dir, metrics_params, viz_params))
+                print(evaluate(model, dataset_test, device, epoch, ckpt_dir, metrics_params, viz_params))
                 print()
