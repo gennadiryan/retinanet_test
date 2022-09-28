@@ -4,6 +4,7 @@ from math import ceil, sqrt
 import torch
 import torchvision
 import torchmetrics
+import torchmetrics.detection.mean_ap
 
 
 def draw(image, target, top_k=100, class_names=None, class_colors=None,):

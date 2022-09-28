@@ -1,6 +1,8 @@
 import os
 from collections import OrderedDict
+from contextlib import ExitStack
 from functools import partial
+from tqdm import tqdm
 from typing import Any, List, Mapping, Optional
 
 import torch
@@ -126,21 +128,47 @@ class RetinanetModel(object):
         return anchor_generator
 
 
-def train_one_epoch(model, dataloader, device):
+def train_one_epoch(model, dataloader, device, epoch, progress_bar=False):
     model.to(device)
     model.train(True)
+
+    losses = list()
+    summary = OrderedDict(list())
+    bar = None
+    if progress_bar:
+        bar = tqdm(total=len(dataloader))
+
     for step, (images, targets) in enumerate(dataloader):
         images = [image.to(device) for image in images]
         targets = [dict([(k, v.to(device)) for k, v in target.items()]) for target in targets]
 
-        losses = model.forward(images, targets)
-        loss = losses['classification'] + losses['bbox_regression']
-        loss.backward()
+        loss = model.forward(images, targets)
+        losses.append(loss)
+
+        sum(loss.values()).backward()
         optimizer.step()
 
-        print(f'Step: {step}')
-        for name, val in losses.items():
-            print(f'  {name}: {val.item()}')
+        for k, v in loss.items():
+            summary.setdefault(k, list()).append(v.item())
+
+        disp = OrderedDict([(k, f'{v.item():.2f}') for k, v in loss.items()])
+
+        if progress_bar:
+            bar.set_postfix(disp)
+            bar.update()
+        else:
+            print(f'Step: {step}')
+            print('\n'.join([f'  {name}: {val}' for name, val in disp.items()]))
+            print()
+
+    summary = OrderedDict([(k, f'{torch.tensor(v).mean().item():.2f}') for k, v in summary.items()])
+
+    if progress_bar:
+        bar.set_postfix(summary)
+        bar.close()
+    else:
+        print(f'Epoch: {epoch}')
+        print('\n'.join([f'  {name}: {val}' for name, val in summary.items()]))
         print()
 
 
@@ -165,7 +193,7 @@ def evaluate(model, dataset, epoch, save_path, metrics_params=None, viz_params=N
 
     torch.save(model.state_dict(), model_path)
     torch.save(metrics, metrics_path)
-    torch.save(grid, viz_path)
+    grid.save(viz_path)
 
     return metrics
 
@@ -182,7 +210,7 @@ if __name__ == '__main__':
     json_fnames = [os.path.join(json_dir, subset, f'{vips_img_name}.json') for subset in 'train eval'.split()]
 
     dataset = VipsDataset(vips_img_fname, json_fnames[0], stride=512, size=1024)
-    dataset_test = list(VipsDataset(vips_img_fname, json_fnames[1], stride=1024, size=1024))
+    dataset_test = VipsDataset(vips_img_fname, json_fnames[1], stride=1024, size=1024)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=4, shuffle=True, collate_fn=lambda _: tuple(zip(*_)))
 
     device = torch.device('cuda', 0)
@@ -198,15 +226,15 @@ if __name__ == '__main__':
         generalized_box_iou=True,
 
         # Evaluation
-        score_thresh=0.25, # this is a good in-between value; 0.05 counts too many spurious detections
+        score_thresh=0.1, # this is a good in-between value; 0.05 counts too many spurious detections
         detections_per_img=100, # cap the detections we work with at 100 as there are 8-10 at MOST in this dataset
         batched_nms=False, # helps eliminate multiple predictions per anchor
     )
     run_params = dict(
         ckpt_dir='/home/gryan/projects/rn/artifacts/ckpts',
-        ckpt_freq=3,
-        run_id='beta',
-        epochs=30,
+        ckpt_freq=5,
+        run_id='gamma',
+        epochs=70,
     )
     metrics_params = dict(
         class_metrics=True,
@@ -228,8 +256,8 @@ if __name__ == '__main__':
         for epoch in range(1, run_params.get('epochs') + 1):
             print(f'Epoch: {epoch}')
             print()
-            train_one_epoch(model, dataloader, device)
+            train_one_epoch(model, dataloader, device, epoch, progress_bar=True)
             if epoch == run_params.get('epochs') or epoch % run_params.get('ckpt_freq') == 0:
                 print(f'Writing checkpoint to {ckpt_dir}')
+                print(evaluate(model, dataset_test, epoch, ckpt_dir, metrics_params, viz_params))
                 print()
-                evaluate_checkpoint(model, dataset_test, epoch, ckpt_dir, **class_params)
